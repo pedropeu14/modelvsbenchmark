@@ -8,7 +8,7 @@ import re
 
 st.set_page_config(page_title="Portfolio vs Benchmark — MTD & YTD", layout="wide")
 st.title("Portfolio vs Benchmark — MTD & YTD")
-st.caption("Build: v2.0 — MTD/YTD por última data do mês + macro sem duplicar subclasses (sem recálculo)")
+st.caption("Build: v2.1 — labels com folga + classes 'deitadas' (sem recálculo)")
 
 # =================== Column mapping (EXPÍCITO) ===================
 COL_MTD_BMK = "MTD Benchmark"
@@ -108,29 +108,19 @@ def month_selectbox(df, label, key):
     sel_date = df.loc[df["period"] == sel_period, "Data"].max()
     return pd.to_datetime(sel_date)
 
-# Build "last day rows" per month across the filtered dataset (one date per period)
-def slice_lastday_per_period(df_in):
-    last_by_period = df_in.groupby("period", as_index=False)["Data"].max().rename(columns={"Data":"last_date"})
-    out = df_in.merge(last_by_period, on="period", how="left")
-    out = out[out["Data"] == out["last_date"]].copy()
-    return out
-
 # Aggregate for macros with macro-row preference; else sum subclasses
 def agg_macros_lastday(df_day, macros):
     res = []
     for mac in macros:
-        # prefer pure macro rows on that day
         rows_macro = df_day[(df_day["class_l1"].str.lower() == mac.lower()) & (df_day["is_pure_macro"])]
         if not rows_macro.empty:
             s = rows_macro[[COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]].sum()
             res.append({"Label": mac, **s.to_dict()})
         else:
-            # fallback: sum only subclasses
             rows_subs = df_day[(df_day["class_l1"].str.lower() == mac.lower()) & (~df_day["is_pure_macro"])]
             if not rows_subs.empty:
                 s = rows_subs[[COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]].sum()
                 res.append({"Label": mac, **s.to_dict()})
-            # if no data, skip
     return pd.DataFrame(res)
 
 # Aggregate subclasses on last day (straight sum)
@@ -193,7 +183,7 @@ sel_subs = st.sidebar.multiselect("Subclasses", existing_subs, default=[])
 
 # Controls
 st.sidebar.markdown("---")
-bar_step = st.sidebar.slider("Largura das barras (step)", min_value=12, max_value=48, value=22, step=2)
+bar_step = st.sidebar.slider("Largura das barras (step)", min_value=12, max_value=64, value=28, step=2)
 show_labels_mtd = st.sidebar.checkbox("Mostrar data labels no MTD", value=True)
 label_fmt = ".2%"
 
@@ -223,17 +213,38 @@ else:
         tidy = mtd_agg.melt(id_vars=["Label"], value_vars=[COL_MTD_BMK, COL_MTD_M4], var_name="Série", value_name="Valor")
         tidy["Série"] = tidy["Série"].replace({COL_MTD_BMK:"Benchmark", COL_MTD_M4:"Modelo"})
 
+        # Headroom for labels: dynamic Y domain padding
+        if not tidy.empty:
+            y_min = float(tidy["Valor"].min())
+            y_max = float(tidy["Valor"].max())
+            dom_lo = min(0.0, y_min)  # keep baseline at 0 when positive
+            pad = (y_max - dom_lo) * 0.18 if y_max > dom_lo else 0.02
+            dom_hi = y_max + pad
+        else:
+            dom_lo, dom_hi = 0.0, 1.0
+
         bars = alt.Chart(tidy).mark_bar().encode(
-            x=alt.X("Label:N", title="Classe/Subclasse", sort="-y"),
-            y=alt.Y("Valor:Q", title="MTD", axis=alt.Axis(format=label_fmt)),
+            x=alt.X("Label:N",
+                    title="Classe/Subclasse",
+                    sort="-y",
+                    axis=alt.Axis(labelAngle=0, labelLimit=1000, labelPadding=8)  # 'deitado' + sem truncar
+            ),
+            y=alt.Y("Valor:Q",
+                    title="MTD",
+                    axis=alt.Axis(format=label_fmt),
+                    scale=alt.Scale(domain=[dom_lo, dom_hi])  # folga no topo
+            ),
             color=alt.Color("Série:N", legend=alt.Legend(title="")),
-            xOffset="Série:N"
-        ).properties(height=320, width=alt.Step(bar_step))
+            xOffset="Série:N",
+            tooltip=[alt.Tooltip("Label:N", title="Classe/Subclasse"),
+                     alt.Tooltip("Série:N", title="Série"),
+                     alt.Tooltip("Valor:Q", title="MTD", format=label_fmt)]
+        ).properties(height=340, width=alt.Step(bar_step))
 
         if show_labels_mtd:
-            labels = alt.Chart(tidy).mark_text(dy=-6).encode(
+            labels = alt.Chart(tidy).mark_text(dy=-8, baseline="bottom").encode(
                 x=alt.X("Label:N"),
-                y=alt.Y("Valor:Q"),
+                y=alt.Y("Valor:Q", scale=alt.Scale(domain=[dom_lo, dom_hi])),
                 detail="Série:N",
                 text=alt.Text("Valor:Q", format=label_fmt),
                 xOffset="Série:N"
@@ -241,19 +252,24 @@ else:
             chart = bars + labels
         else:
             chart = bars
+
         st.altair_chart(chart, use_container_width=True)
 
         mtd_agg["MTD Diff (M4 - Bmk)"] = mtd_agg[COL_MTD_M4] - mtd_agg[COL_MTD_BMK]
         st.dataframe(style_pct_df(mtd_agg.copy(), [COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4, "MTD Diff (M4 - Bmk)"]))
 
-# =================== Section B: YTD — linhas por mês usando somente a ÚLTIMA DATA ===================
+# =================== Section B: YTD — (permanece igual ao v2.0) ===================
 st.subheader("B) YTD — Evolução (uma observação por mês; macro sem duplicar)")
 
-def build_ytd_lines_lastday(df_in, macros, subs):
-    df_last = slice_lastday_per_period(df_in)  # mantém somente a última DATA de cada mês
-    frames = []
+def slice_lastday_per_period(df_in):
+    last_by_period = df_in.groupby("period", as_index=False)["Data"].max().rename(columns={"Data":"last_date"})
+    out = df_in.merge(last_by_period, on="period", how="left")
+    out = out[out["Data"] == out["last_date"]].copy()
+    return out
 
-    # Macros com preferência por linha macro
+def build_ytd_lines_lastday(df_in, macros, subs):
+    df_last = slice_lastday_per_period(df_in)
+    frames = []
     if macros:
         for mac in macros:
             macro_rows = df_last[(df_last["class_l1"].str.lower() == mac.lower()) & (df_last["is_pure_macro"])]
@@ -269,15 +285,12 @@ def build_ytd_lines_lastday(df_in, macros, subs):
                                 .sum().reset_index())
                 base["Label"] = mac
             frames.append(base)
-
-    # Subclasses
     if subs:
         subs_rows = df_last[df_last["Asset Class"].isin(subs)]
         if not subs_rows.empty:
             base = (subs_rows.groupby(["Asset Class","period","month_idx","month_lbl"], dropna=False)[[COL_YTD_BMK, COL_YTD_M4]]
                            .sum().reset_index().rename(columns={"Asset Class":"Label"}))
             frames.append(base)
-
     if not frames:
         return pd.DataFrame(columns=["Label","month_lbl","month_idx",COL_YTD_BMK,COL_YTD_M4])
     out = pd.concat(frames, ignore_index=True)
@@ -302,8 +315,6 @@ else:
         color="Label:N",
         shape=alt.ShapeValue("circle")
     )
-
-    # labels no último ponto
     last_pts = (tidy_ytd.sort_values("month_idx").groupby(["Label","Série"], as_index=False).tail(1))
     labels = alt.Chart(last_pts).mark_text(dx=6, dy=-6).encode(
         x=alt.X("month_lbl:N", sort=alt.SortField(field="month_idx", order="ascending")),
@@ -316,4 +327,4 @@ else:
     st.altair_chart(chart.properties(height=380), use_container_width=True)
 
 st.markdown("---")
-st.caption("Sem recálculo. MTD/YTD lidos do arquivo. Usamos somente a ÚLTIMA DATA de cada mês e evitamos duplicar macro + subclasses.")
+st.caption("Ajustes: eixo X 'deitado' no MTD e folga dinâmica no topo para não cortar labels; resto idêntico ao v2.0.")
