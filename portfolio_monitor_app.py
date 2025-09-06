@@ -188,7 +188,7 @@ show_labels_mtd = st.sidebar.checkbox("Mostrar data labels no MTD", value=True)
 label_fmt = ".2%"
 
 # =================== Section A: MTD — usar só a ÚLTIMA DATA do mês ===================
-st.subheader("A) MTD — Benchmark vs M4 (último dia do mês; sem duplicar macro/sub)")
+st.subheader("A) MTD — Benchmark vs M4 ")
 sel_mtd_date = month_selectbox(df_filt, "Selecione o mês (mmm-yyyy) para MTD:", key="mtd_month")
 
 def prepare_mtd_lastday(df_in, macros, subs, sel_date):
@@ -259,7 +259,7 @@ else:
         st.dataframe(style_pct_df(mtd_agg.copy(), [COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4, "MTD Diff (M4 - Bmk)"]))
 
 # =================== Section B: YTD — (permanece igual ao v2.0) ===================
-st.subheader("B) YTD — Evolução (uma observação por mês; macro sem duplicar)")
+st.subheader("B) YTD — Evolução")
 
 def slice_lastday_per_period(df_in):
     last_by_period = df_in.groupby("period", as_index=False)["Data"].max().rename(columns={"Data":"last_date"})
