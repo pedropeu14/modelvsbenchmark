@@ -202,7 +202,7 @@ show_labels_mtd = st.sidebar.checkbox("Mostrar data labels no MTD", value=True)
 label_fmt = ".2%"
 
 # =================== Section A: MTD — usar só a ÚLTIMA DATA do mês ===================
-st.subheader("A) MTD — Benchmark vs M4 (último dia do mês; sem duplicar macro/sub)")
+st.subheader("A) MTD — Benchmark vs M4")
 sel_mtd_date = month_selectbox(df_filt, "Selecione o mês (mmm-yyyy) para MTD:", key="mtd_month")
 
 def prepare_mtd_lastday(df_in, macros, subs, sel_date):
@@ -271,7 +271,7 @@ else:
         st.dataframe(style_pct_df(mtd_agg.copy(), [COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4, "MTD Diff (M4 - Bmk)"]))
 
 # =================== Section B: YTD — Evolução por mês (última data; macro sem duplicar) ===================
-st.subheader("B) YTD — Evolução (uma observação por mês; macro sem duplicar)")
+st.subheader("B) YTD — Evolução")
 
 def build_ytd_lines_lastday(df_in, macros, subs):
     df_last = slice_lastday_per_period(df_in)
@@ -333,7 +333,7 @@ else:
     st.altair_chart(chart.properties(height=380), use_container_width=True)
 
 # =================== Section C: Total — SOMENTE MTD (estilo igual ao A) ===================
-st.subheader("C) Total — MTD (soma de TODAS as macros)")
+st.subheader("C) Total — MTD ")
 
 def total_mtd_from_macros_lastday(df_in, sel_date, label_total="Portfólio"):
     if sel_date is None:
@@ -396,7 +396,7 @@ if sel_mtd_date is not None:
         st.dataframe(style_pct_all_numeric(detail))
 
 # =================== Section D: YTD — Total (soma das macros) por mês ===================
-st.subheader("D) YTD — Total (soma das macros) por mês")
+st.subheader("D) Total - YTD")
 
 def ytd_total_evolution(df_in):
     df_last = slice_lastday_per_period(df_in)  # última data de cada mês
