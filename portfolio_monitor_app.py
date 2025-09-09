@@ -1,4 +1,3 @@
-
 import os
 import pandas as pd
 import numpy as np
@@ -8,7 +7,7 @@ import re
 
 st.set_page_config(page_title="Portfolio vs Benchmark — MTD & YTD", layout="wide")
 st.title("Portfolio vs Benchmark — MTD & YTD")
-st.caption("Build: v2.3.3 — Detalhe por macro 100% em % + Total MTD (estilo A)")
+st.caption("Build: v2.3.4 — MTD por subclasse usa última data DISPONÍVEL no mês + Total MTD idem")
 
 # =================== Column mapping (EXPÍCITO) ===================
 COL_MTD_BMK = "MTD Benchmark"
@@ -42,7 +41,7 @@ SUBCLASSES_MAP = {
     "03. Equities": [
         "03.Equities 3.1 US Equity",
         "03.Equities 3.2 US Growth (n)",
-        "03.Equities 3.3 European Equty",
+        "03.Equities 3.3 European Equity",
         "03.Equities 3.4 Emerging Markets Equity",
         "03.Equities 3.5 World Equity",
     ]
@@ -111,37 +110,51 @@ def month_selectbox(df, label, key):
     labels = [m.strftime("%b-%Y") for m in options]
     sel_lbl = st.selectbox(label, labels, index=default_idx, key=key)
     sel_period = options[labels.index(sel_lbl)]
-    # pick the last available date in that month
+    # last available date in month (global) -- useful for reference
     sel_date = df.loc[df["period"] == sel_period, "Data"].max()
     return pd.to_datetime(sel_date)
 
-# Aggregate for macros with macro-row preference; else sum subclasses
-def agg_macros_lastday(df_day, macros):
+# === helpers para pegar a última linha DISPONÍVEL por label no mês ===
+def _pick_last_per_label(df_month, label_col):
+    if df_month.empty:
+        return df_month
+    last_dates = (df_month.groupby(label_col)["Data"]
+                  .max()
+                  .reset_index()
+                  .rename(columns={"Data":"last_date"}))
+    merged = df_month.merge(last_dates, on=label_col, how="inner")
+    return merged[merged["Data"] == merged["last_date"]].copy()
+
+def agg_subs_month_last(df_month, subs):
+    rows = df_month[df_month["Asset Class"].isin(subs)].copy()
+    if rows.empty:
+        return pd.DataFrame(columns=["Label", COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4])
+    last_rows = _pick_last_per_label(rows, "Asset Class")
+    agg = (last_rows.groupby("Asset Class", dropna=False)[[COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]]
+           .sum()
+           .reset_index()
+           .rename(columns={"Asset Class":"Label"}))
+    return agg
+
+def agg_macros_month_last(df_month, macros):
     res = []
     for mac in macros:
-        rows_macro = df_day[(df_day["class_l1"].str.lower() == mac.lower()) & (df_day["is_pure_macro"])]
-        if not rows_macro.empty:
-            s = rows_macro[[COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]].sum()
+        # Prefer macro pura (ultima disponível no mês)
+        macro_month = df_month[(df_month["class_l1"].str.lower() == mac.lower()) & (df_month["is_pure_macro"])]
+        if not macro_month.empty:
+            last_macro = _pick_last_per_label(macro_month, "class_l1")
+            s = last_macro[[COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]].sum()
             res.append({"Label": mac, **s.to_dict()})
         else:
-            rows_subs = df_day[(df_day["class_l1"].str.lower() == mac.lower()) & (~df_day["is_pure_macro"])]
-            if not rows_subs.empty:
-                s = rows_subs[[COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]].sum()
+            # fallback: somar subclasses na última data de cada subclasse no mês
+            subs_month = df_month[(df_month["class_l1"].str.lower() == mac.lower()) & (~df_month["is_pure_macro"])]
+            if not subs_month.empty:
+                last_subs = _pick_last_per_label(subs_month, "Asset Class")
+                s = last_subs[[COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]].sum()
                 res.append({"Label": mac, **s.to_dict()})
     return pd.DataFrame(res)
 
-# Aggregate subclasses on last day (straight sum)
-def agg_subs_lastday(df_day, subs):
-    if not subs:
-        return pd.DataFrame(columns=["Label", COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4])
-    rows = df_day[df_day["Asset Class"].isin(subs)].copy()
-    if rows.empty:
-        return pd.DataFrame(columns=["Label", COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4])
-    agg = (rows.groupby("Asset Class", dropna=False)[[COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]]
-                .sum().reset_index().rename(columns={"Asset Class":"Label"}))
-    return agg
-
-# Helpers for last-day per month
+# Helpers para última data de cada mês (usado no YTD)
 def slice_lastday_per_period(df_in):
     last_by_period = df_in.groupby("period", as_index=False)["Data"].max().rename(columns={"Data":"last_date"})
     out = df_in.merge(last_by_period, on="period", how="left")
@@ -201,17 +214,20 @@ bar_step = st.sidebar.slider("Largura das barras (step)", min_value=12, max_valu
 show_labels_mtd = st.sidebar.checkbox("Mostrar data labels no MTD", value=True)
 label_fmt = ".2%"
 
-# =================== Section A: MTD — usar só a ÚLTIMA DATA do mês ===================
+# =================== Section A: MTD — usar a ÚLTIMA DATA DISPONÍVEL no mês ===================
 st.subheader("A) MTD — Benchmark vs M4")
 sel_mtd_date = month_selectbox(df_filt, "Selecione o mês (mmm-yyyy) para MTD:", key="mtd_month")
 
-def prepare_mtd_lastday(df_in, macros, subs, sel_date):
-    df_day = df_in[df_in["Data"] == sel_date].copy()
+def prepare_mtd_month_last(df_in, macros, subs, sel_date):
+    if sel_date is None:
+        return pd.DataFrame(columns=["Label", COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4])
+    sel_period = sel_date.to_period("M")
+    df_month = df_in[df_in["period"] == sel_period].copy()
     parts = []
     if macros:
-        parts.append(agg_macros_lastday(df_day, macros))
+        parts.append(agg_macros_month_last(df_month, macros))
     if subs:
-        parts.append(agg_subs_lastday(df_day, subs))
+        parts.append(agg_subs_month_last(df_month, subs))
     if not parts:
         return pd.DataFrame(columns=["Label", COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4])
     out = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
@@ -220,7 +236,7 @@ def prepare_mtd_lastday(df_in, macros, subs, sel_date):
 if sel_mtd_date is None:
     st.info("Sem datas disponíveis.")
 else:
-    mtd_agg = prepare_mtd_lastday(df_filt, sel_macros, sel_subs, sel_mtd_date)
+    mtd_agg = prepare_mtd_month_last(df_filt, sel_macros, sel_subs, sel_mtd_date)
     if mtd_agg.empty:
         st.info("Selecione ao menos uma macro classe e/ou subclasse para visualizar.")
     else:
@@ -270,7 +286,7 @@ else:
         mtd_agg["MTD Diff (M4 - Bmk)"] = mtd_agg[COL_MTD_M4] - mtd_agg[COL_MTD_BMK]
         st.dataframe(style_pct_df(mtd_agg.copy(), [COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4, "MTD Diff (M4 - Bmk)"]))
 
-# =================== Section B: YTD — Evolução por mês (última data; macro sem duplicar) ===================
+# =================== Section B: YTD — Evolução (última data de cada mês) ===================
 st.subheader("B) YTD — Evolução")
 
 def build_ytd_lines_lastday(df_in, macros, subs):
@@ -332,20 +348,20 @@ else:
     chart = lines + points + labels
     st.altair_chart(chart.properties(height=380), use_container_width=True)
 
-# =================== Section C: Total — SOMENTE MTD (estilo igual ao A) ===================
+# =================== Section C: Total — MTD (usando última disponível por macro/sub) ===================
 st.subheader("C) Total — MTD ")
 
-def total_mtd_from_macros_lastday(df_in, sel_date, label_total="Portfólio"):
+def total_mtd_from_macros_month(df_in, sel_date, label_total="Portfólio"):
     if sel_date is None:
         return None, pd.DataFrame(columns=["Macro", COL_MTD_BMK, COL_MTD_M4])
-    df_day = df_in[df_in["Data"] == sel_date].copy()
+    sel_period = sel_date.to_period("M")
+    df_month = df_in[df_in["period"] == sel_period].copy()
     macros_present = []
     for mac in MACRO_CLASSES:
-        has_macro = ((df_day["class_l1"].str.lower() == mac.lower()) & df_day["is_pure_macro"]).any()
-        has_sub   = ((df_day["class_l1"].str.lower() == mac.lower()) & (~df_day["is_pure_macro"])).any()
-        if has_macro or has_sub:
+        has_any = ((df_month["class_l1"].str.lower() == mac.lower())).any()
+        if has_any:
             macros_present.append(mac)
-    macros_df = agg_macros_lastday(df_day, macros_present)
+    macros_df = agg_macros_month_last(df_month, macros_present)
     if macros_df.empty:
         return None, pd.DataFrame(columns=["Macro", COL_MTD_BMK, COL_MTD_M4])
     totals = {
@@ -361,9 +377,9 @@ def total_mtd_from_macros_lastday(df_in, sel_date, label_total="Portfólio"):
     return tidy_total, detail
 
 if sel_mtd_date is not None:
-    tidy_total, detail = total_mtd_from_macros_lastday(df_filt, sel_mtd_date, label_total="Total")
+    tidy_total, detail = total_mtd_from_macros_month(df_filt, sel_mtd_date, label_total="Total")
     if tidy_total is None or tidy_total.empty:
-        st.info("Não há macros presentes na última data do mês selecionado.")
+        st.info("Não há macros presentes no mês selecionado.")
     else:
         y_min = float(tidy_total["Valor"].min())
         y_max = float(tidy_total["Valor"].max())
@@ -391,8 +407,7 @@ if sel_mtd_date is not None:
         st.altair_chart(bars + labels_total, use_container_width=True)
 
         detail["Diff MTD (M4-Bmk)"] = detail[COL_MTD_M4] - detail[COL_MTD_BMK]
-        st.markdown("**Detalhe por macro (última data do mês selecionado)**")
-        # >>> Format ALL numeric cols as percentage
+        st.markdown("**Detalhe por macro (mês, última data disponível por macro/subclasse)**")
         st.dataframe(style_pct_all_numeric(detail))
 
 # =================== Section D: YTD — Total (soma das macros) por mês ===================
@@ -440,4 +455,4 @@ else:
     st.altair_chart(lines + labels, use_container_width=True)
 
 st.markdown("---")
-st.caption("Tabela 'Detalhe por macro' agora formata **todas** as colunas numéricas como percentual (duas casas).")
+st.caption("A partir desta versão, o MTD por subclasse/macro usa a **última data disponível dentro do mês** (não exige existir na data global do mês).")
