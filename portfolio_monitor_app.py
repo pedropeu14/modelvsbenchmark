@@ -7,7 +7,7 @@ import re
 
 st.set_page_config(page_title="Portfolio vs Benchmark — MTD & YTD", layout="wide")
 st.title("Portfolio vs Benchmark — MTD & YTD")
-st.caption("Build: v2.3.4 — MTD por subclasse usa última data DISPONÍVEL no mês + Total MTD idem")
+st.caption("Build: v2.3.5 — MTD por sub: última data disponível no mês; YTD Total: última por macro; mensagens claras")
 
 # =================== Column mapping (EXPÍCITO) ===================
 COL_MTD_BMK = "MTD Benchmark"
@@ -53,7 +53,7 @@ def load_data(path: str):
     df = pd.read_excel(path, sheet_name=0)
     cols = {c: c.strip() for c in df.columns}
     df = df.rename(columns=cols)
-    required = ["Data","Asset Class",COL_MTD_BMK,COL_MTD_M4,COL_YTD_BMK,COL_YTD_M4]
+    required = ["Data", "Asset Class", COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]
     missing = [c for c in required if c not in df.columns]
     if missing:
         st.error(f"Colunas ausentes no arquivo: {missing}")
@@ -110,18 +110,17 @@ def month_selectbox(df, label, key):
     labels = [m.strftime("%b-%Y") for m in options]
     sel_lbl = st.selectbox(label, labels, index=default_idx, key=key)
     sel_period = options[labels.index(sel_lbl)]
-    # last available date in month (global) -- useful for reference
     sel_date = df.loc[df["period"] == sel_period, "Data"].max()
     return pd.to_datetime(sel_date)
 
-# === helpers para pegar a última linha DISPONÍVEL por label no mês ===
+# === helpers: última linha DISPONÍVEL por label no mês ===
 def _pick_last_per_label(df_month, label_col):
     if df_month.empty:
         return df_month
     last_dates = (df_month.groupby(label_col)["Data"]
                   .max()
                   .reset_index()
-                  .rename(columns={"Data":"last_date"}))
+                  .rename(columns={"Data": "last_date"}))
     merged = df_month.merge(last_dates, on=label_col, how="inner")
     return merged[merged["Data"] == merged["last_date"]].copy()
 
@@ -133,13 +132,13 @@ def agg_subs_month_last(df_month, subs):
     agg = (last_rows.groupby("Asset Class", dropna=False)[[COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4]]
            .sum()
            .reset_index()
-           .rename(columns={"Asset Class":"Label"}))
+           .rename(columns={"Asset Class": "Label"}))
     return agg
 
 def agg_macros_month_last(df_month, macros):
     res = []
     for mac in macros:
-        # Prefer macro pura (ultima disponível no mês)
+        # Prefer macro pura (última disponível no mês)
         macro_month = df_month[(df_month["class_l1"].str.lower() == mac.lower()) & (df_month["is_pure_macro"])]
         if not macro_month.empty:
             last_macro = _pick_last_per_label(macro_month, "class_l1")
@@ -154,9 +153,9 @@ def agg_macros_month_last(df_month, macros):
                 res.append({"Label": mac, **s.to_dict()})
     return pd.DataFrame(res)
 
-# Helpers para última data de cada mês (usado no YTD)
+# Helpers: última data (global) de cada mês — usado no YTD por classe
 def slice_lastday_per_period(df_in):
-    last_by_period = df_in.groupby("period", as_index=False)["Data"].max().rename(columns={"Data":"last_date"})
+    last_by_period = df_in.groupby("period", as_index=False)["Data"].max().rename(columns={"Data": "last_date"})
     out = df_in.merge(last_by_period, on="period", how="left")
     out = out[out["Data"] == out["last_date"]].copy()
     return out
@@ -238,29 +237,29 @@ if sel_mtd_date is None:
 else:
     mtd_agg = prepare_mtd_month_last(df_filt, sel_macros, sel_subs, sel_mtd_date)
     if mtd_agg.empty:
-        st.info("Selecione ao menos uma macro classe e/ou subclasse para visualizar.")
+        picked = sel_macros + sel_subs
+        if picked:
+            st.info("Sem dados no mês selecionado para: " + ", ".join(picked))
+        else:
+            st.info("Selecione ao menos uma macro classe e/ou subclasse para visualizar.")
     else:
         tidy = mtd_agg.melt(id_vars=["Label"], value_vars=[COL_MTD_BMK, COL_MTD_M4], var_name="Série", value_name="Valor")
-        tidy["Série"] = tidy["Série"].replace({COL_MTD_BMK:"Benchmark", COL_MTD_M4:"Modelo"})
+        tidy["Série"] = tidy["Série"].replace({COL_MTD_BMK: "Benchmark", COL_MTD_M4: "Modelo"})
 
-        # Headroom for labels: dynamic Y domain padding
+        # Headroom para labels
         if not tidy.empty:
             y_min = float(tidy["Valor"].min())
             y_max = float(tidy["Valor"].max())
-            dom_lo = min(0.0, y_min)  # keep baseline at 0 when positive
+            dom_lo = min(0.0, y_min)
             pad = (y_max - dom_lo) * 0.18 if y_max > dom_lo else 0.02
             dom_hi = y_max + pad
         else:
             dom_lo, dom_hi = 0.0, 1.0
 
         bars = alt.Chart(tidy).mark_bar().encode(
-            x=alt.X("Label:N",
-                    title="Classe/Subclasse",
-                    sort="-y",
+            x=alt.X("Label:N", title="Classe/Subclasse", sort="-y",
                     axis=alt.Axis(labelAngle=0, labelLimit=1000, labelPadding=8)),
-            y=alt.Y("Valor:Q",
-                    title="MTD",
-                    axis=alt.Axis(format=label_fmt),
+            y=alt.Y("Valor:Q", title="MTD", axis=alt.Axis(format=label_fmt),
                     scale=alt.Scale(domain=[dom_lo, dom_hi])),
             color=alt.Color("Série:N", legend=alt.Legend(title="")),
             xOffset="Série:N",
@@ -284,9 +283,10 @@ else:
         st.altair_chart(chart, use_container_width=True)
 
         mtd_agg["MTD Diff (M4 - Bmk)"] = mtd_agg[COL_MTD_M4] - mtd_agg[COL_MTD_BMK]
-        st.dataframe(style_pct_df(mtd_agg.copy(), [COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4, "MTD Diff (M4 - Bmk)"]))
+        st.dataframe(style_pct_df(mtd_agg.copy(),
+                                  [COL_MTD_BMK, COL_MTD_M4, COL_YTD_BMK, COL_YTD_M4, "MTD Diff (M4 - Bmk)"]))
 
-# =================== Section B: YTD — Evolução (última data de cada mês) ===================
+# =================== Section B: YTD — Evolução (última data de cada mês por classe) ===================
 st.subheader("B) YTD — Evolução")
 
 def build_ytd_lines_lastday(df_in, macros, subs):
@@ -296,25 +296,26 @@ def build_ytd_lines_lastday(df_in, macros, subs):
         for mac in macros:
             macro_rows = df_last[(df_last["class_l1"].str.lower() == mac.lower()) & (df_last["is_pure_macro"])]
             if not macro_rows.empty:
-                base = (macro_rows.groupby(["period","month_idx","month_lbl"], dropna=False)[[COL_YTD_BMK, COL_YTD_M4]]
-                                .sum().reset_index())
+                base = (macro_rows.groupby(["period","month_idx","month_lbl"], dropna=False)
+                                [[COL_YTD_BMK, COL_YTD_M4]].sum().reset_index())
                 base["Label"] = mac
             else:
                 subs_rows = df_last[(df_last["class_l1"].str.lower() == mac.lower()) & (~df_last["is_pure_macro"])]
                 if subs_rows.empty:
                     continue
-                base = (subs_rows.groupby(["period","month_idx","month_lbl"], dropna=False)[[COL_YTD_BMK, COL_YTD_M4]]
-                                .sum().reset_index())
+                base = (subs_rows.groupby(["period","month_idx","month_lbl"], dropna=False)
+                                [[COL_YTD_BMK, COL_YTD_M4]].sum().reset_index())
                 base["Label"] = mac
             frames.append(base)
     if subs:
         subs_rows = df_last[df_last["Asset Class"].isin(subs)]
         if not subs_rows.empty:
-            base = (subs_rows.groupby(["Asset Class","period","month_idx","month_lbl"], dropna=False)[[COL_YTD_BMK, COL_YTD_M4]]
-                           .sum().reset_index().rename(columns={"Asset Class":"Label"}))
+            base = (subs_rows.groupby(["Asset Class","period","month_idx","month_lbl"], dropna=False)
+                           [[COL_YTD_BMK, COL_YTD_M4]].sum().reset_index()
+                           .rename(columns={"Asset Class": "Label"}))
             frames.append(base)
     if not frames:
-        return pd.DataFrame(columns=["Label","month_lbl","month_idx",COL_YTD_BMK,COL_YTD_M4])
+        return pd.DataFrame(columns=["Label", "month_lbl", "month_idx", COL_YTD_BMK, COL_YTD_M4])
     out = pd.concat(frames, ignore_index=True)
     return out
 
@@ -322,11 +323,13 @@ ytd_lines = build_ytd_lines_lastday(df_filt, sel_macros, sel_subs)
 if ytd_lines.empty:
     st.info("Selecione classes para ver a evolução YTD.")
 else:
-    tidy_ytd = ytd_lines.melt(id_vars=["Label","month_lbl","month_idx"], value_vars=[COL_YTD_BMK, COL_YTD_M4], var_name="Série", value_name="Valor")
-    tidy_ytd["Série"] = tidy_ytd["Série"].replace({COL_YTD_BMK:"Benchmark", COL_YTD_M4:"Modelo"})
+    tidy_ytd = ytd_lines.melt(id_vars=["Label","month_lbl","month_idx"], value_vars=[COL_YTD_BMK, COL_YTD_M4],
+                              var_name="Série", value_name="Valor")
+    tidy_ytd["Série"] = tidy_ytd["Série"].replace({COL_YTD_BMK: "Benchmark", COL_YTD_M4: "Modelo"})
 
     lines = alt.Chart(tidy_ytd).mark_line().encode(
-        x=alt.X("month_lbl:N", title="Data (mmm-yyyy)", sort=alt.SortField(field="month_idx", order="ascending")),
+        x=alt.X("month_lbl:N", title="Data (mmm-yyyy)",
+                sort=alt.SortField(field="month_idx", order="ascending")),
         y=alt.Y("Valor:Q", title="YTD", axis=alt.Axis(format=".2%")),
         color=alt.Color("Label:N", title="Classe/Subclasse"),
         strokeDash=alt.StrokeDash("Série:N", sort=["Benchmark","Modelo"], title="Série")
@@ -345,10 +348,9 @@ else:
         text=alt.Text("Valor:Q", format=".2%")
     )
 
-    chart = lines + points + labels
-    st.altair_chart(chart.properties(height=380), use_container_width=True)
+    st.altair_chart((lines + points + labels).properties(height=380), use_container_width=True)
 
-# =================== Section C: Total — MTD (usando última disponível por macro/sub) ===================
+# =================== Section C: Total — MTD (última disponível por macro/sub) ===================
 st.subheader("C) Total — MTD ")
 
 def total_mtd_from_macros_month(df_in, sel_date, label_total="Portfólio"):
@@ -368,10 +370,10 @@ def total_mtd_from_macros_month(df_in, sel_date, label_total="Portfólio"):
         COL_MTD_BMK: macros_df[COL_MTD_BMK].sum(),
         COL_MTD_M4:  macros_df[COL_MTD_M4].sum(),
     }
-    detail = macros_df.rename(columns={"Label":"Macro"})
+    detail = macros_df.rename(columns={"Label": "Macro"})
     tidy_total = pd.DataFrame({
         "Label": [label_total, label_total],
-        "Série": ["Benchmark","Modelo"],
+        "Série": ["Benchmark", "Modelo"],
         "Valor": [totals[COL_MTD_BMK], totals[COL_MTD_M4]]
     })
     return tidy_total, detail
@@ -388,8 +390,10 @@ if sel_mtd_date is not None:
         dom_hi = y_max + pad
 
         bars = alt.Chart(tidy_total).mark_bar().encode(
-            x=alt.X("Label:N", title="Classe/Subclasse", axis=alt.Axis(labelAngle=0, labelLimit=1000, labelPadding=8)),
-            y=alt.Y("Valor:Q", title="MTD", axis=alt.Axis(format=label_fmt), scale=alt.Scale(domain=[dom_lo, dom_hi])),
+            x=alt.X("Label:N", title="Classe/Subclasse",
+                    axis=alt.Axis(labelAngle=0, labelLimit=1000, labelPadding=8)),
+            y=alt.Y("Valor:Q", title="MTD", axis=alt.Axis(format=label_fmt),
+                    scale=alt.Scale(domain=[dom_lo, dom_hi])),
             color=alt.Color("Série:N", legend=alt.Legend(title="")),
             xOffset="Série:N",
             tooltip=[alt.Tooltip("Série:N", title="Série"),
@@ -410,20 +414,21 @@ if sel_mtd_date is not None:
         st.markdown("**Detalhe por macro (mês, última data disponível por macro/subclasse)**")
         st.dataframe(style_pct_all_numeric(detail))
 
-# =================== Section D: YTD — Total (soma das macros) por mês ===================
+# =================== Section D: YTD — Total (última disponível por macro/mês) ===================
 st.subheader("D) Total - YTD")
 
 def ytd_total_evolution(df_in):
-    df_last = slice_lastday_per_period(df_in)  # última data de cada mês
     vals = []
-    for period, sub in df_last.groupby("period", dropna=False):
+    for period, sub in df_in.groupby("period", dropna=False):
+        # Para cada macro naquele mês, use última disponível (macro pura > soma das subs)
         macros_present = []
         for mac in MACRO_CLASSES:
-            has_macro = ((sub["class_l1"].str.lower() == mac.lower()) & sub["is_pure_macro"]).any()
-            has_sub   = ((sub["class_l1"].str.lower() == mac.lower()) & (~sub["is_pure_macro"])).any()
-            if has_macro or has_sub:
+            has_any = ((sub["class_l1"].str.lower() == mac.lower())).any()
+            if has_any:
                 macros_present.append(mac)
-        macros_df = agg_macros_lastday(sub, macros_present)
+        if not macros_present:
+            continue
+        macros_df = agg_macros_month_last(sub, macros_present)
         if macros_df.empty:
             continue
         ytd_bmk = macros_df[COL_YTD_BMK].sum()
@@ -439,9 +444,11 @@ ytd_tot = ytd_total_evolution(df_filt)
 if ytd_tot.empty:
     st.info("Sem dados para evolução total no período selecionado.")
 else:
-    tidy_evo = ytd_tot.melt(id_vars=["month_lbl","month_idx"], value_vars=["Benchmark","Modelo"], var_name="Série", value_name="Valor")
+    tidy_evo = ytd_tot.melt(id_vars=["month_lbl","month_idx"], value_vars=["Benchmark","Modelo"],
+                            var_name="Série", value_name="Valor")
     lines = alt.Chart(tidy_evo).mark_line(point=True).encode(
-        x=alt.X("month_lbl:N", title="Data (mmm-yyyy)", sort=alt.SortField(field="month_idx", order="ascending")),
+        x=alt.X("month_lbl:N", title="Data (mmm-yyyy)",
+                sort=alt.SortField(field="month_idx", order="ascending")),
         y=alt.Y("Valor:Q", title="YTD Total", axis=alt.Axis(format=label_fmt)),
         color=alt.Color("Série:N", title=""),
     ).properties(height=320)
@@ -455,4 +462,4 @@ else:
     st.altair_chart(lines + labels, use_container_width=True)
 
 st.markdown("---")
-st.caption("A partir desta versão, o MTD por subclasse/macro usa a **última data disponível dentro do mês** (não exige existir na data global do mês).")
+st.caption("Mensagens aprimoradas quando não há dados para os labels no mês. MTD/YTD continuam lendo diretamente as colunas do arquivo.")
