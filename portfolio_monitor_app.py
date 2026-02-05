@@ -44,6 +44,7 @@ SUBCLASSES_MAP = {
         "03.Equities 3.3 European Equity",
         "03.Equities 3.4 Emerging Markets Equity",
         "03.Equities 3.5 World Equity",
+        "03.Equities 3.6 Thematics",
     ]
 }
 
